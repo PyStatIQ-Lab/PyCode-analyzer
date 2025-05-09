@@ -8,7 +8,7 @@ from functools import lru_cache
 # Configuration
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free model available on Hugging Face
 CACHE_SIZE = 100  # Number of analyses to cache
-HF_API_TOKEN = "your_huggingface_token"  # Get from https://huggingface.co/settings/tokens
+HF_API_TOKEN = "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"  # Get from https://huggingface.co/settings/tokens
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
 
 def get_score_class(score: int) -> str:
