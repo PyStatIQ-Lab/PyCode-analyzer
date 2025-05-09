@@ -1,13 +1,15 @@
 import streamlit as st
-import ollama
+import requests
 import hashlib
 import json
 from typing import Dict, Any
 from functools import lru_cache
 
 # Configuration
-MODEL_NAME = "mistral"  # or "ollama3"
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free model available on Hugging Face
 CACHE_SIZE = 100  # Number of analyses to cache
+HF_API_TOKEN = "your_huggingface_token"  # Get from https://huggingface.co/settings/tokens
+API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
 
 def get_score_class(score: int) -> str:
     """Return CSS class based on score value"""
@@ -61,9 +63,9 @@ def generate_prompt(code: str) -> str:
         "risk_profile": "Risk management features, position sizing, stop-loss mechanisms"
     }
     
-    prompt = f"""
-Analyze the following Python trading code systematically and provide consistent ratings:
+    prompt = f"""<<SYS>>You are a trading algorithm analysis assistant. Analyze the following Python trading code systematically and provide consistent ratings:<</SYS>>
 
+[INST]
 1. Evaluate these aspects STRICTLY on a scale of 1-100:
 - Data Accuracy: {criteria['data_accuracy']}
 - Model Efficiency: {criteria['model_efficiency']}
@@ -99,7 +101,7 @@ Format your response as EXACTLY this JSON structure:
 
 Code to analyze:
 {code}
-"""
+[/INST]"""
     return prompt
 
 def normalize_scores(analysis: Dict[str, Any]) -> Dict[str, Any]:
@@ -134,24 +136,30 @@ def get_code_hash(code: str) -> str:
     return hashlib.md5(code.encode('utf-8')).hexdigest()
 
 @lru_cache(maxsize=CACHE_SIZE)
-def analyze_code_with_ollama(code: str) -> Dict[str, Any]:
-    """Send code to Ollama for comprehensive analysis with caching"""
+def analyze_code_with_hf(code: str) -> Dict[str, Any]:
+    """Send code to Hugging Face Inference API for analysis"""
     prompt = generate_prompt(code)
-    code_hash = get_code_hash(code)
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
     
     try:
-        response = ollama.generate(
-            model=MODEL_NAME,
-            prompt=prompt,
-            format="json",
-            options={
-                "temperature": 0.3,
-                "top_p": 0.9,
-                "seed": int(code_hash[:8], 16) % 1000000
-            }
+        response = requests.post(
+            API_URL,
+            headers=headers,
+            json={"inputs": prompt, "parameters": {"max_new_tokens": 1000, "temperature": 0.3}}
         )
         
-        analysis = json.loads(response["response"])
+        if response.status_code != 200:
+            st.error(f"API Error: {response.text}")
+            return None
+            
+        analysis_text = response.json()[0]['generated_text']
+        
+        # Extract just the JSON part from the response
+        json_start = analysis_text.find('{')
+        json_end = analysis_text.rfind('}') + 1
+        json_str = analysis_text[json_start:json_end]
+        
+        analysis = json.loads(json_str)
         
         # Validate and normalize the response
         required = ['description', 'pros', 'cons', 'ratings', 'risk_profile_classification']
@@ -170,7 +178,7 @@ def analyze_code_with_ollama(code: str) -> Dict[str, Any]:
         return analysis
         
     except Exception as e:
-        st.error(f"Error analyzing code: {e}")
+        st.error(f"Error analyzing code: {str(e)}")
         return None
 
 def display_analysis_results(analysis: Dict[str, Any], overall_score: float):
@@ -235,6 +243,16 @@ def main():
     st.title("📊 Trading Code Risk Analyzer")
     st.markdown("Comprehensive analysis of trading algorithms with risk profile classification")
     
+    # Add link to get Hugging Face token
+    st.markdown("""
+    <small>You need a Hugging Face API token. Get one at 
+    <a href="https://huggingface.co/settings/tokens" target="_blank">https://huggingface.co/settings/tokens</a>
+    </small>
+    """, unsafe_allow_html=True)
+    
+    # Let users input their own token
+    hf_token = st.text_input("Enter your Hugging Face API token:", type="password")
+    
     code = st.text_area(
         "Enter Trading Algorithm Code:",
         height=300,
@@ -242,14 +260,20 @@ def main():
     )
     
     if st.button("Analyze Code"):
-        if not code.strip():
+        if not hf_token:
+            st.error("Please enter your Hugging Face API token")
+        elif not code.strip():
             st.error("Please enter Python code to analyze")
         else:
-            with st.spinner("Analyzing code..."):
-                analysis = analyze_code_with_ollama(code.strip())
+            with st.spinner("Analyzing code (this may take 20-30 seconds)..."):
+                # Set the token globally
+                global HF_API_TOKEN
+                HF_API_TOKEN = hf_token
+                
+                analysis = analyze_code_with_hf(code.strip())
                 
                 if not analysis:
-                    st.error("Failed to analyze code. Please ensure Ollama is running and try again.")
+                    st.error("Failed to analyze code. Please check your token and try again.")
                 else:
                     overall_score = calculate_overall_score(analysis['ratings'])
                     st.success("Analysis complete!")
