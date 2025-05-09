@@ -10,7 +10,7 @@ from functools import lru_cache
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free Hugging Face model
 CACHE_SIZE = 100
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
-DEFAULT_TOKEN = "hf_xxxxxxxxxxxxxxxx"  # Optional: Set a default token for testing
+DEFAULT_TOKEN = "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"  # Optional: Set a default token for testing
 
 # ========== HELPER FUNCTIONS ==========
 def get_score_class(score: int) -> str:
