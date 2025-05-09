@@ -83,7 +83,7 @@ def calculate_overall_score(ratings: Dict[str, int]) -> float:
 # ========== CORE ANALYSIS FUNCTION ==========
 @lru_cache(maxsize=CACHE_SIZE)
 def analyze_code(code: str, hf_token: str) -> Dict[str, Any]:
-    """Analyze code using Hugging Face API with robust error handling"""
+    """Analyze code using Hugging Face API with robust JSON parsing"""
     headers = {"Authorization": f"Bearer {hf_token}"}
     payload = {
         "inputs": generate_prompt(code),
@@ -95,32 +95,42 @@ def analyze_code(code: str, hf_token: str) -> Dict[str, Any]:
     }
 
     try:
-        # First try - may fail if model is loading
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         
-        # Handle model loading case
-        if response.status_code == 503:
-            est_time = int(response.headers.get('estimated_time', 30))
-            st.info(f"Model is loading. Waiting {est_time} seconds...")
-            time.sleep(est_time)
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
-
-        # Check for errors
+        # Handle API errors
         if response.status_code != 200:
             error_msg = response.json().get('error', response.text)
             st.error(f"API Error: {error_msg}")
             return None
 
-        # Parse response
-        result = response.json()[0]['generated_text']
-        json_start = result.find('{')
-        json_end = result.rfind('}') + 1
-        analysis = json.loads(result[json_start:json_end])
+        # Extract and clean the response
+        response_text = response.json()[0]['generated_text']
+        
+        # Find JSON portion in the response
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        
+        if json_start == -1 or json_end == 0:
+            st.error("Could not find JSON in the API response")
+            return None
+            
+        json_str = response_text[json_start:json_end]
+        
+        # Parse with improved error handling
+        try:
+            analysis = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            st.error(f"Failed to parse JSON: {str(e)}")
+            st.text("Raw API response:")
+            st.code(response_text)
+            return None
 
-        # Validate and normalize
+        # Validate required fields
         required_fields = ['description', 'ratings', 'pros', 'cons', 'risk_profile_classification']
         if not all(field in analysis for field in required_fields):
-            raise ValueError("Missing required fields in analysis")
+            missing = [f for f in required_fields if f not in analysis]
+            st.error(f"Missing required fields in analysis: {', '.join(missing)}")
+            return None
 
         return normalize_scores(analysis)
 
