@@ -2,110 +2,61 @@ import streamlit as st
 import requests
 import hashlib
 import json
+import time
 from typing import Dict, Any
 from functools import lru_cache
 
-# Configuration
-MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free model available on Hugging Face
-CACHE_SIZE = 100  # Number of analyses to cache
-HF_API_TOKEN = "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"  # Get from https://huggingface.co/settings/tokens
+# ========== CONFIGURATION ==========
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"  # Free Hugging Face model
+CACHE_SIZE = 100
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_NAME}"
+DEFAULT_TOKEN = "hf_xxxxxxxxxxxxxxxx"  # Optional: Set a default token for testing
 
+# ========== HELPER FUNCTIONS ==========
 def get_score_class(score: int) -> str:
     """Return CSS class based on score value"""
-    if score >= 80:
-        return "excellent"
-    elif score >= 60:
-        return "good"
-    elif score >= 40:
-        return "average"
-    else:
-        return "poor"
+    if score >= 80: return "excellent"
+    elif score >= 60: return "good"
+    elif score >= 40: return "average"
+    else: return "poor"
 
 def get_risk_profile_type(risk_score: int) -> Dict[str, Any]:
-    """Determine the trader risk profile based on risk score"""
+    """Determine trader risk profile based on score"""
     if risk_score >= 80:
-        return {
-            "type": "Ultra-Conservative",
-            "description": "Extremely risk-averse, prioritizes capital preservation above all else",
-            "icon": "shield",
-            "color": "blue"
-        }
+        return {"type": "Ultra-Conservative", "description": "Extremely risk-averse", "icon": "🛡️", "color": "blue"}
     elif risk_score >= 60:
-        return {
-            "type": "Conservative",
-            "description": "Prefers low-risk investments with steady returns",
-            "icon": "umbrella",
-            "color": "green"
-        }
+        return {"type": "Conservative", "description": "Prefers low-risk investments", "icon": "☂️", "color": "green"}
     elif risk_score >= 40:
-        return {
-            "type": "Moderate",
-            "description": "Balances risk and return, accepts some volatility",
-            "icon": "scales",
-            "color": "orange"
-        }
+        return {"type": "Moderate", "description": "Balances risk and return", "icon": "⚖️", "color": "orange"}
     else:
-        return {
-            "type": "Aggressive",
-            "description": "Seeks high returns and accepts significant risk",
-            "icon": "bolt",
-            "color": "red"
-        }
+        return {"type": "Aggressive", "description": "Seeks high returns", "icon": "⚡", "color": "red"}
 
 def generate_prompt(code: str) -> str:
-    """Generate a structured prompt for consistent analysis"""
-    criteria = {
-        "data_accuracy": "Completeness of financial data, handling of missing data, data validation",
-        "model_efficiency": "Computational complexity, memory usage, optimization techniques",
-        "problem_solving": "Edge case handling, error recovery, robustness to market changes",
-        "logical_structure": "Code organization, modularity, readability, documentation",
-        "risk_profile": "Risk management features, position sizing, stop-loss mechanisms"
-    }
-    
-    prompt = f"""<<SYS>>You are a trading algorithm analysis assistant. Analyze the following Python trading code systematically and provide consistent ratings:<</SYS>>
+    """Generate structured prompt for analysis"""
+    return f"""<<SYS>>You are a trading algorithm analyst. Provide JSON analysis of this code:<</SYS>>
 
-[INST]
-1. Evaluate these aspects STRICTLY on a scale of 1-100:
-- Data Accuracy: {criteria['data_accuracy']}
-- Model Efficiency: {criteria['model_efficiency']}
-- Problem Solving: {criteria['problem_solving']}
-- Logical Structure: {criteria['logical_structure']}
-- Risk Profile: {criteria['risk_profile']}
+[INST]Analyze this trading code and return JSON with:
+1. Ratings (1-100) for: data_accuracy, model_efficiency, problem_solving, logical_structure, risk_profile
+2. List of pros and cons
+3. Risk classification with justification
 
-2. Use these evaluation guidelines:
-- Start with 50 as a neutral score
-- Add/subtract points based on specific features
-- Deduct points for each identified issue
-- Cap scores at 100
-
-3. Provide EXPLICIT justification for each score
-
-Format your response as EXACTLY this JSON structure:
+Format EXACTLY like this:
 {{
-  "description": "...",
-  "ratings": {{
-    "data_accuracy": int (1-100),
-    "model_efficiency": int (1-100),
-    "problem_solving": int (1-100),
-    "logical_structure": int (1-100),
-    "risk_profile": int (1-100)
-  }},
-  "pros": ["...", "...", "..."],
-  "cons": ["...", "...", "..."],
+  "description": "summary",
+  "ratings": {{"data_accuracy": 75, "model_efficiency": 80, ...}},
+  "pros": ["point1", "point2"],
+  "cons": ["issue1", "issue2"],
   "risk_profile_classification": {{
-    "type": "...",
-    "justification": "..."
+    "type": "Moderate",
+    "justification": "explanation"
   }}
 }}
 
-Code to analyze:
-{code}
-[/INST]"""
-    return prompt
+Code:
+{code}[/INST]"""
 
 def normalize_scores(analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """Ensure scores fall within reasonable ranges and are integers"""
+    """Ensure scores are valid integers between 0-100"""
     if 'ratings' not in analysis:
         return analysis
         
@@ -114,12 +65,12 @@ def normalize_scores(analysis: Dict[str, Any]) -> Dict[str, Any]:
             score = int(analysis['ratings'][metric])
             analysis['ratings'][metric] = max(0, min(100, score))
         except (ValueError, TypeError):
-            analysis['ratings'][metric] = 50  # Default neutral score
+            analysis['ratings'][metric] = 50  # Default score
             
     return analysis
 
 def calculate_overall_score(ratings: Dict[str, int]) -> float:
-    """Calculate weighted overall score out of 100"""
+    """Calculate weighted overall score"""
     weights = {
         'data_accuracy': 0.25,
         'model_efficiency': 0.2,
@@ -127,157 +78,150 @@ def calculate_overall_score(ratings: Dict[str, int]) -> float:
         'logical_structure': 0.2,
         'risk_profile': 0.15
     }
-    
-    overall = sum(ratings[field] * weights[field] for field in weights)
-    return round(overall, 1)
+    return round(sum(ratings[field] * weights[field] for field in weights), 1)
 
-def get_code_hash(code: str) -> str:
-    """Generate a consistent hash for caching"""
-    return hashlib.md5(code.encode('utf-8')).hexdigest()
-
+# ========== CORE ANALYSIS FUNCTION ==========
 @lru_cache(maxsize=CACHE_SIZE)
-def analyze_code_with_hf(code: str) -> Dict[str, Any]:
-    """Send code to Hugging Face Inference API for analysis"""
-    prompt = generate_prompt(code)
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    
+def analyze_code(code: str, hf_token: str) -> Dict[str, Any]:
+    """Analyze code using Hugging Face API with robust error handling"""
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    payload = {
+        "inputs": generate_prompt(code),
+        "parameters": {
+            "max_new_tokens": 1000,
+            "temperature": 0.3,
+            "return_full_text": False
+        }
+    }
+
     try:
-        response = requests.post(
-            API_URL,
-            headers=headers,
-            json={"inputs": prompt, "parameters": {"max_new_tokens": 1000, "temperature": 0.3}}
-        )
+        # First try - may fail if model is loading
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
         
+        # Handle model loading case
+        if response.status_code == 503:
+            est_time = int(response.headers.get('estimated_time', 30))
+            st.info(f"Model is loading. Waiting {est_time} seconds...")
+            time.sleep(est_time)
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=30)
+
+        # Check for errors
         if response.status_code != 200:
-            st.error(f"API Error: {response.text}")
+            error_msg = response.json().get('error', response.text)
+            st.error(f"API Error: {error_msg}")
             return None
-            
-        analysis_text = response.json()[0]['generated_text']
-        
-        # Extract just the JSON part from the response
-        json_start = analysis_text.find('{')
-        json_end = analysis_text.rfind('}') + 1
-        json_str = analysis_text[json_start:json_end]
-        
-        analysis = json.loads(json_str)
-        
-        # Validate and normalize the response
-        required = ['description', 'pros', 'cons', 'ratings', 'risk_profile_classification']
-        for field in required:
-            if field not in analysis:
-                raise ValueError(f"Missing field {field} in response")
-                
-        analysis = normalize_scores(analysis)
-        
-        # Ensure risk profile classification exists
-        if 'type' not in analysis['risk_profile_classification']:
-            analysis['risk_profile_classification']['type'] = "Moderate"
-        if 'justification' not in analysis['risk_profile_classification']:
-            analysis['risk_profile_classification']['justification'] = "No specific justification provided"
-            
-        return analysis
-        
+
+        # Parse response
+        result = response.json()[0]['generated_text']
+        json_start = result.find('{')
+        json_end = result.rfind('}') + 1
+        analysis = json.loads(result[json_start:json_end])
+
+        # Validate and normalize
+        required_fields = ['description', 'ratings', 'pros', 'cons', 'risk_profile_classification']
+        if not all(field in analysis for field in required_fields):
+            raise ValueError("Missing required fields in analysis")
+
+        return normalize_scores(analysis)
+
     except Exception as e:
-        st.error(f"Error analyzing code: {str(e)}")
+        st.error(f"Analysis failed: {str(e)}")
         return None
 
-def display_analysis_results(analysis: Dict[str, Any], overall_score: float):
-    """Display the analysis results in Streamlit"""
-    score_class = get_score_class(overall_score)
-    risk_type = get_risk_profile_type(analysis['ratings']['risk_profile'])
-    
-    # Overall score
-    st.markdown(f"""
-    <div style="
-        background: {'#4CAF50' if score_class == 'excellent' else 
-                   '#8BC34A' if score_class == 'good' else 
-                   '#FFC107' if score_class == 'average' else '#F44336'};
-        color: white;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-        margin: 10px 0;
-    ">
-        <h2>Overall Score</h2>
-        <h1>{overall_score}</h1>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Create columns for the results
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Algorithm Description
-        st.subheader("📝 Algorithm Description")
-        st.write(analysis['description'])
-        
-        # Risk Profile
-        st.subheader(f"👤 Trader Risk Profile: {analysis['risk_profile_classification']['type']}")
-        st.write(risk_type['description'])
-        st.write(f"**Justification:** {analysis['risk_profile_classification']['justification']}")
-        
-    with col2:
-        # Quality Metrics
-        st.subheader("⭐ Quality Metrics")
-        for metric, score in analysis['ratings'].items():
-            st.write(f"**{metric.replace('_', ' ').title()}**")
-            st.progress(score / 100)
-            st.caption(f"Score: {score}")
-        
-    # Pros and Cons
-    st.subheader("✅ Strengths")
-    for pro in analysis['pros']:
-        st.success(f"• {pro}")
-    
-    st.subheader("⚠️ Risk Factors")
-    for con in analysis['cons']:
-        st.error(f"• {con}")
-
+# ========== STREAMLIT UI ==========
 def main():
     st.set_page_config(
-        page_title="Python Trading Code Analyzer",
+        page_title="Trading Code Analyzer",
         page_icon="📊",
         layout="wide"
     )
-    
-    st.title("📊 Trading Code Risk Analyzer")
-    st.markdown("Comprehensive analysis of trading algorithms with risk profile classification")
-    
-    # Add link to get Hugging Face token
-    st.markdown("""
-    <small>You need a Hugging Face API token. Get one at 
-    <a href="https://huggingface.co/settings/tokens" target="_blank">https://huggingface.co/settings/tokens</a>
-    </small>
-    """, unsafe_allow_html=True)
-    
-    # Let users input their own token
-    hf_token = st.text_input("Enter your Hugging Face API token:", type="password")
-    
+
+    st.title("📊 Trading Algorithm Analyzer")
+    st.caption("Analyze Python trading code using AI")
+
+    # Token input
+    with st.expander("🔑 API Settings", expanded=True):
+        hf_token = st.text_input(
+            "Hugging Face Token",
+            type="password",
+            value=DEFAULT_TOKEN,
+            help="Get your token from https://huggingface.co/settings/tokens"
+        )
+
+    # Code input
     code = st.text_area(
-        "Enter Trading Algorithm Code:",
+        "Paste your Python trading code:",
         height=300,
-        placeholder="Paste your Python trading code here..."
+        placeholder="""def moving_average_strategy(prices, window=50):
+    signals = []
+    for i in range(len(prices)):
+        if i >= window:
+            avg = sum(prices[i-window:i])/window
+            signals.append('BUY' if prices[i] > avg else 'SELL')
+    return signals"""
     )
-    
-    if st.button("Analyze Code"):
+
+    # Analysis button
+    if st.button("🚀 Analyze Code", use_container_width=True):
         if not hf_token:
-            st.error("Please enter your Hugging Face API token")
+            st.error("Please enter your Hugging Face token")
         elif not code.strip():
-            st.error("Please enter Python code to analyze")
+            st.error("Please enter some code to analyze")
         else:
-            with st.spinner("Analyzing code (this may take 20-30 seconds)..."):
-                # Set the token globally
-                global HF_API_TOKEN
-                HF_API_TOKEN = hf_token
+            with st.spinner("🔍 Analyzing code (may take 20-40 seconds)..."):
+                analysis = analyze_code(code.strip(), hf_token)
                 
-                analysis = analyze_code_with_hf(code.strip())
-                
-                if not analysis:
-                    st.error("Failed to analyze code. Please check your token and try again.")
-                else:
-                    overall_score = calculate_overall_score(analysis['ratings'])
-                    st.success("Analysis complete!")
-                    display_analysis_results(analysis, overall_score)
+            if analysis:
+                display_results(analysis)
+            else:
+                st.error("Analysis failed. Please check your token and try again.")
+
+def display_results(analysis: Dict[str, Any]):
+    """Display analysis results beautifully"""
+    overall_score = calculate_overall_score(analysis['ratings'])
+    risk_profile = get_risk_profile_type(analysis['ratings']['risk_profile'])
+
+    # Score header
+    st.subheader("📈 Analysis Results")
+    score_color = ("#4CAF50" if overall_score >= 80 else
+                  "#8BC34A" if overall_score >= 60 else
+                  "#FFC107" if overall_score >= 40 else "#F44336")
+    
+    st.markdown(f"""
+    <div style="background:{score_color};color:white;padding:1rem;border-radius:10px;text-align:center;">
+        <h2>Overall Score</h2>
+        <h1>{overall_score}/100</h1>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Main columns
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Description
+        st.markdown("### 📝 Algorithm Overview")
+        st.write(analysis['description'])
+
+        # Risk Profile
+        st.markdown(f"### {risk_profile['icon']} Risk Profile: {analysis['risk_profile_classification']['type']}")
+        st.write(risk_profile['description'])
+        st.markdown(f"**Justification:** {analysis['risk_profile_classification']['justification']}")
+
+    with col2:
+        # Metrics
+        st.markdown("### ⚖️ Quality Metrics")
+        for metric, score in analysis['ratings'].items():
+            st.markdown(f"**{metric.replace('_', ' ').title()}**")
+            st.progress(score/100, text=f"{score}/100")
+
+    # Pros/Cons
+    st.markdown("### ✅ Strengths")
+    for pro in analysis['pros']:
+        st.success(f"• {pro}")
+
+    st.markdown("### ⚠️ Weaknesses")
+    for con in analysis['cons']:
+        st.error(f"• {con}")
 
 if __name__ == "__main__":
     main()
