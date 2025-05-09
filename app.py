@@ -83,60 +83,79 @@ def calculate_overall_score(ratings: Dict[str, int]) -> float:
 # ========== CORE ANALYSIS FUNCTION ==========
 @lru_cache(maxsize=CACHE_SIZE)
 def analyze_code(code: str, hf_token: str) -> Dict[str, Any]:
-    """Analyze code using Hugging Face API with robust JSON parsing"""
+    """Analyze code using Hugging Face API with multiple fallback strategies"""
     headers = {"Authorization": f"Bearer {hf_token}"}
-    payload = {
-        "inputs": generate_prompt(code),
-        "parameters": {
-            "max_new_tokens": 1000,
-            "temperature": 0.3,
-            "return_full_text": False
-        }
-    }
-
-    try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-        
-        # Handle API errors
-        if response.status_code != 200:
-            error_msg = response.json().get('error', response.text)
-            st.error(f"API Error: {error_msg}")
-            return None
-
-        # Extract and clean the response
-        response_text = response.json()[0]['generated_text']
-        
-        # Find JSON portion in the response
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        
-        if json_start == -1 or json_end == 0:
-            st.error("Could not find JSON in the API response")
-            return None
-            
-        json_str = response_text[json_start:json_end]
-        
-        # Parse with improved error handling
+    prompt = generate_prompt(code)
+    
+    # Try with different parameters if first attempt fails
+    for attempt in range(3):
         try:
-            analysis = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            st.error(f"Failed to parse JSON: {str(e)}")
-            st.text("Raw API response:")
-            st.code(response_text)
-            return None
-
-        # Validate required fields
-        required_fields = ['description', 'ratings', 'pros', 'cons', 'risk_profile_classification']
-        if not all(field in analysis for field in required_fields):
-            missing = [f for f in required_fields if f not in analysis]
-            st.error(f"Missing required fields in analysis: {', '.join(missing)}")
-            return None
-
-        return normalize_scores(analysis)
-
-    except Exception as e:
-        st.error(f"Analysis failed: {str(e)}")
-        return None
+            payload = {
+                "inputs": prompt,
+                "parameters": {
+                    "max_new_tokens": 1000,
+                    "temperature": 0.3 if attempt < 2 else 0.1,  # More deterministic on last try
+                    "return_full_text": False
+                }
+            }
+            
+            response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+            
+            # Handle rate limiting and model loading
+            if response.status_code == 503:
+                est_time = int(response.headers.get('estimated_time', 30))
+                st.warning(f"Model is loading, waiting {est_time} seconds...")
+                time.sleep(est_time)
+                continue
+                
+            if response.status_code != 200:
+                error_msg = response.json().get('error', response.text)
+                st.error(f"API Error (Attempt {attempt + 1}): {error_msg}")
+                time.sleep(2)
+                continue
+                
+            # Try multiple strategies to extract JSON
+            response_text = response.json()[0]['generated_text']
+            
+            # Strategy 1: Direct JSON parse
+            try:
+                analysis = json.loads(response_text)
+                if all(field in analysis for field in ['description', 'ratings']):
+                    return normalize_scores(analysis)
+            except json.JSONDecodeError:
+                pass
+                
+            # Strategy 2: Extract JSON from markdown code block
+            if '```json' in response_text:
+                json_str = response_text.split('```json')[1].split('```')[0]
+                try:
+                    analysis = json.loads(json_str)
+                    if all(field in analysis for field in ['description', 'ratings']):
+                        return normalize_scores(analysis)
+                except (json.JSONDecodeError, IndexError):
+                    pass
+                    
+            # Strategy 3: Find first/last braces
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            if json_start != -1 and json_end != 0:
+                try:
+                    analysis = json.loads(response_text[json_start:json_end])
+                    if all(field in analysis for field in ['description', 'ratings']):
+                        return normalize_scores(analysis)
+                except json.JSONDecodeError:
+                    pass
+                    
+            # If all strategies fail, show debugging info
+            st.error(f"Could not extract valid JSON from response (Attempt {attempt + 1})")
+            st.code(f"Raw response:\n{response_text}")
+            
+        except Exception as e:
+            st.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            time.sleep(2)
+            continue
+            
+    return None
 
 # ========== STREAMLIT UI ==========
 def main():
